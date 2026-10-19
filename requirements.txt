@@ -1,0 +1,7 @@
+Pillow>=11.0
+numpy>=2.1
+opencv-python-headless>=4.11
+Send2Trash>=1.8.3
+pillow-heif>=0.20
+pywebview>=6.2,<7
+PyYAML>=6.0.3,<7
