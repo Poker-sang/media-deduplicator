@@ -1,6 +1,6 @@
 # 本地媒体去重
 
-Windows 图片与视频去重工具，当前版本 **1.0**。使用 React、Tailwind CSS 和 Radix UI 构建深色界面，通过 pywebview / WebView2 连接 Python 比较引擎。
+Windows 图片与视频去重工具，当前版本 **1.0**。使用 React、TypeScript、Tailwind CSS 和 Radix UI 构建深色界面，通过 pywebview / WebView2 连接 Python 比较引擎。
 
 ## 功能
 
@@ -30,16 +30,20 @@ npm run build --prefix frontend
 ## 测试与打包
 
 ```powershell
+npm run typecheck --prefix frontend
 .\.venv312\Scripts\python.exe -m unittest discover -s tests -v
 .\build.ps1
 ```
 
-构建脚本会编译前端、运行测试，再将单文件 EXE 输出到项目上一级的 `release` 目录；可以通过 `-Destination` 指定输出路径。发布版无需安装 Python 或 Node.js，需要系统具备 WebView2 Runtime，设置保存在 EXE 同目录。
+前端启用 TypeScript 严格检查，设置、扫描结果及桌面桥接接口都有类型定义。`typecheck` 也检查 `frontend/type-tests` 中的接口约束；`npm run build` 会先检查类型再编译前端。
+
+构建脚本会检查类型、编译前端、运行测试，再将单文件 EXE 输出到项目上一级的 `release` 目录；可以通过 `-Destination` 指定输出路径。发布版无需安装 Python 或 Node.js，需要系统具备 WebView2 Runtime，设置保存在 EXE 同目录。
 
 ## 目录
 
 ```text
-frontend/src/                  React 界面
+frontend/src/                  React / TypeScript 界面及桥接类型
+frontend/type-tests/           TypeScript 接口约束检查
 photo_deduplicator/engine.py    图片和视频比较引擎
 photo_deduplicator/desktop.py   扫描、预览及桌面桥接
 photo_deduplicator/settings.py  YAML 设置

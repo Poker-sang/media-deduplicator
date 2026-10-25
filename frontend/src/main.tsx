@@ -1,10 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Layers2, Images, Film, Folder, FolderOpen, FileImage, ChevronRight, ChevronDown, Check, Play, Square, Minus, X, Copy, ShieldCheck, ScanLine, CircleCheck, SlidersHorizontal, Trash2, CheckCheck, RotateCcw, ExternalLink, Image as ImageIcon, AlertCircle, LoaderCircle, Search, HardDrive, Maximize2, Info } from 'lucide-react';
+import { Layers2, Images, Film, Folder, FolderOpen, FileImage, ChevronRight, Check, Square, Minus, X, ShieldCheck, ScanLine, CircleCheck, SlidersHorizontal, Trash2, CheckCheck, RotateCcw, ExternalLink, Image as ImageIcon, AlertCircle, LoaderCircle, Search, Info } from 'lucide-react';
+import { api } from './bridge';
+import type { DialogKind, DuplicateGroup, MediaFile, MediaTab, PathField, PathKey, PathKind, ScanMode, ScanState, Settings, WindowAction } from './types';
 import './style.css';
 
-const defaults = {
+const defaults: Settings = {
   photo_base_folder: '', folder_recursive: true, folder_crop: false, folder_sensitivity: '平衡',
   reference_path: '', reference_recursive: true, reference_crop: false, reference_sensitivity: '平衡',
   compare_second_folder: '', compare_recursive: true, compare_crop: false, compare_sensitivity: '平衡',
@@ -13,33 +16,29 @@ const defaults = {
   video_second_folder: '', video_compare_recursive: true, video_compare_sensitivity: '平衡',
   media_tab: 0, photo_mode: 0, video_mode: 0,
 };
-const emptyState = { scanning: false, stage: '准备就绪', detail: '选择路径，然后开始扫描', progress: 0, groups: [], errors: [], scanned: 0, compared: 0, elapsed: 0, revision: 0 };
-const fmt = n => { if (!n) return '0 B'; const u = ['B','KB','MB','GB','TB']; const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), 4); return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`; };
-const api = async (method, ...args) => {
-  if (!window.pywebview?.api) throw new Error('桌面服务尚未连接，请稍后重试');
-  const value = await window.pywebview.api[method](...args);
-  if (value?.error) throw new Error(value.error);
-  return value;
-};
-const keyFor = (photo, mode) => photo ? ['folder','reference','compare'][mode] : ['video_folder','video_reference','video_compare'][mode];
+const emptyState: ScanState = { scanning: false, cancelling: false, stage: '准备就绪', detail: '选择路径，然后开始扫描', progress: 0, groups: [], errors: [], scanned: 0, compared: 0, elapsed: 0, revision: 0 };
+const fmt = (n = 0) => { if (!n) return '0 B'; const u = ['B','KB','MB','GB','TB']; const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), 4); return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`; };
+const photoPrefixes = ['folder','reference','compare'] as const;
+const videoPrefixes = ['video_folder','video_reference','video_compare'] as const;
+const scanModes = [0, 1, 2] as const;
+const sensitivities = ['严格','平衡','宽松'] as const;
+const keyFor = (photo: boolean, mode: ScanMode) => (photo ? photoPrefixes : videoPrefixes)[mode];
 
 function App() {
   const [settings, setSettings] = useState(defaults);
   const [ready, setReady] = useState(false);
   const [state, setState] = useState(emptyState);
-  const [groupId, setGroupId] = useState(null);
-  const [fileId, setFileId] = useState(null);
-  const [marks, setMarks] = useState(new Set());
+  const [groupId, setGroupId] = useState<string | null>(null);
+  const [fileId, setFileId] = useState<string | null>(null);
+  const [marks, setMarks] = useState(new Set<string>());
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
-  const [dialog, setDialog] = useState(null);
+  const [dialog, setDialog] = useState<DialogKind>(null);
   const [busy, setBusy] = useState(false);
   const [about, setAbout] = useState(false);
   const revision = useRef(-1);
   const saved = useRef('');
   const saveQueue = useRef(Promise.resolve());
-  const markRef = useRef(marks);
-  markRef.current = marks;
   const photo = settings.media_tab === 0;
   const mode = photo ? settings.photo_mode : settings.video_mode;
   const prefix = keyFor(photo, mode);
@@ -50,8 +49,8 @@ function App() {
   const markedFiles = allFiles.filter(f => marks.has(f.id));
   const markedSize = markedFiles.reduce((n, f) => n + f.size, 0);
   const visibleGroups = state.groups.filter(g => !query || g.files.some(f => f.name.toLowerCase().includes(query.toLowerCase())));
-  const update = (key, value) => setSettings(s => ({ ...s, [key]: value }));
-  const fail = e => setNotice(e.message || String(e));
+  const update = <K extends keyof Settings>(key: K, value: Settings[K]) => setSettings(s => ({ ...s, [key]: value }));
+  const fail = (e: unknown) => setNotice(e instanceof Error ? e.message : String(e));
 
   useEffect(() => {
     let disposed = false;
@@ -75,12 +74,13 @@ function App() {
     if (data === saved.current) return;
     // Persist immediately: closing the window after an edit cannot lose a debounced write.
     saved.current = data;
-    saveQueue.current = saveQueue.current.catch(() => {}).then(() => api('save_settings', settings)).catch(fail);
+    saveQueue.current = saveQueue.current.catch(() => {}).then(async () => { await api('save_settings', settings); }).catch(fail);
   }, [settings, ready]);
 
   useEffect(() => {
     if (!ready) return;
-    let disposed = false, timeout;
+    let disposed = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
         const next = await api('get_state', revision.current);
@@ -88,7 +88,7 @@ function App() {
         if (next.groups) {
           revision.current = next.revision;
           setMarks(new Set()); setGroupId(next.groups[0]?.id ?? null); setFileId(null);
-          setState(next);
+          setState({ ...next, groups: next.groups });
         } else setState(s => ({ ...s, ...next }));
       } catch (e) { if (!disposed) fail(e); }
       if (!disposed) timeout = setTimeout(poll, 300);
@@ -97,13 +97,13 @@ function App() {
     return () => { disposed = true; clearTimeout(timeout); };
   }, [ready]);
 
-  const changeMedia = value => {
+  const changeMedia = (value: MediaTab) => {
     if (state.scanning || value === settings.media_tab) return;
     update('media_tab', value);
     api('clear_results').catch(fail); setNotice(''); setQuery('');
   };
-  const toggleMark = id => setMarks(m => { const copy = new Set(m); copy.has(id) ? copy.delete(id) : copy.add(id); return copy; });
-  const recommend = groups => {
+  const toggleMark = (id: string) => setMarks(m => { const copy = new Set(m); copy.has(id) ? copy.delete(id) : copy.add(id); return copy; });
+  const recommend = (groups: DuplicateGroup[]) => {
     setMarks(previous => {
       const copy = new Set(previous);
       groups.forEach(g => g.files.forEach(f => f.recommended ? copy.delete(f.id) : copy.add(f.id)));
@@ -114,7 +114,7 @@ function App() {
     setNotice('');
     try { await saveQueue.current; await api('start_scan', settings); } catch (e) { fail(e); }
   };
-  const browse = async (key, kind) => {
+  const browse = async (key: PathKey, kind: PathKind) => {
     try { const path = await api('choose_path', kind, settings[key]); if (path) update(key, path); } catch (e) { fail(e); }
   };
   const recycle = async () => {
@@ -122,10 +122,13 @@ function App() {
     try { const result = await api('recycle', markedFiles.map(f => f.id)); setDialog(null); setNotice(result.message); } catch (e) { fail(e); setDialog(null); }
     finally { setBusy(false); }
   };
-  const windowAction = async op => {
+  const openFile = (file: MediaFile | undefined, folder = false) => {
+    if (file) api('open_file', file.id, folder).catch(fail);
+  };
+  const windowAction = async (op: WindowAction) => {
     try { if (op === 'close') { await saveQueue.current; await api('save_settings', settings); } await api('window_action', op); } catch (e) { fail(e); }
   };
-  const startDrag = event => {
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const handle = event.currentTarget, pointerId = event.pointerId;
     const startX = event.screenX, startY = event.screenY;
@@ -137,7 +140,7 @@ function App() {
       handle.removeEventListener('lostpointercapture', end);
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
     };
-    const move = e => {
+    const move = (e: PointerEvent) => {
       if (Math.hypot(e.screenX - startX, e.screenY - startY) < 4) return;
       end();
       api('drag_window').catch(fail);
@@ -147,13 +150,14 @@ function App() {
     handle.addEventListener('pointercancel', end);
     handle.addEventListener('lostpointercapture', end);
   };
-  const startResize = event => {
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     const startX = event.screenX, startY = event.screenY, width = window.innerWidth, height = window.innerHeight;
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
-    let latest = [width, height], pending = false, stopped = false;
+    let latest: [number, number] = [width, height];
+    let pending = false, stopped = false;
     const send = async () => {
       if (pending) return;
       pending = true;
@@ -162,14 +166,14 @@ function App() {
       pending = false;
       if (!stopped && size !== latest) send();
     };
-    const move = e => { latest = [Math.max(1000, width + e.screenX - startX), Math.max(680, height + e.screenY - startY)]; send(); };
+    const move = (e: PointerEvent) => { latest = [Math.max(1000, width + e.screenX - startX), Math.max(680, height + e.screenY - startY)]; send(); };
     const end = () => { stopped = true; handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', end); handle.removeEventListener('pointercancel', end); };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
   };
 
-  let paths;
+  let paths: PathField[];
   if (photo) paths = mode === 0 ? [['基准文件夹','photo_base_folder','folder']] : mode === 1 ? [['基准文件夹','photo_base_folder','folder'],['基准图片','reference_path','image']] : [['基准文件夹','photo_base_folder','folder'],['对比文件夹','compare_second_folder','folder']];
   else paths = mode === 0 ? [['基准文件夹','video_base_folder','folder']] : mode === 1 ? [['基准文件夹','video_base_folder','folder'],['基准视频','video_reference_path','video']] : [['基准文件夹','video_base_folder','folder'],['对比文件夹','video_second_folder','folder']];
 
@@ -192,7 +196,7 @@ function App() {
             <button role="tab" aria-selected={!photo} className={!photo ? 'active' : ''} disabled={state.scanning} onClick={() => changeMedia(1)}><Film size={16}/>视频</button>
           </div>
           <div className="mode-switch" role="tablist" aria-label="扫描模式">
-            {['文件夹内去重', photo ? '单图对比文件夹' : '单视频对比文件夹','文件夹对比文件夹'].map((label,i) => <button role="tab" aria-selected={mode === i} key={i} disabled={state.scanning} className={mode === i ? 'active' : ''} onClick={() => update(photo ? 'photo_mode' : 'video_mode', i)}>{label}</button>)}
+            {scanModes.map(i => <button role="tab" aria-selected={mode === i} key={i} disabled={state.scanning} className={mode === i ? 'active' : ''} onClick={() => update(photo ? 'photo_mode' : 'video_mode', i)}>{['文件夹内去重', photo ? '单图对比文件夹' : '单视频对比文件夹','文件夹对比文件夹'][i]}</button>)}
           </div>
           <button className="icon-button info-button" title="使用帮助" aria-label="使用帮助" onClick={() => setAbout(true)}><Info size={17}/></button>
         </div>
@@ -208,9 +212,9 @@ function App() {
         <div className="options-row">
           <div className="options-left">
             <label className="checkbox-label"><input type="checkbox" disabled={state.scanning} checked={settings[`${prefix}_recursive`]} onChange={e => update(`${prefix}_recursive`, e.target.checked)}/><span className="check-box"><Check size={11}/></span>包含子文件夹</label>
-            {photo && <label className="checkbox-label" title="检测局部裁剪及构图变化，扫描耗时更长"><input type="checkbox" disabled={state.scanning} checked={settings[`${prefix}_crop`]} onChange={e => update(`${prefix}_crop`, e.target.checked)}/><span className="check-box"><Check size={11}/></span>裁剪比较<span className="subtle-badge">较慢</span></label>}
+            {photo && <label className="checkbox-label" title="检测局部裁剪及构图变化，扫描耗时更长"><input type="checkbox" disabled={state.scanning} checked={settings[`${photoPrefixes[mode]}_crop`]} onChange={e => update(`${photoPrefixes[mode]}_crop`, e.target.checked)}/><span className="check-box"><Check size={11}/></span>裁剪比较<span className="subtle-badge">较慢</span></label>}
           </div>
-          <div className="sensitivity"><SlidersHorizontal size={13}/><span>{photo ? '匹配灵敏度' : '视频相似度'}</span><div className="small-segment" role="group" aria-label="灵敏度">{['严格','平衡','宽松'].map(value => <button key={value} disabled={state.scanning} className={settings[`${prefix}_sensitivity`] === value ? 'active' : ''} onClick={() => update(`${prefix}_sensitivity`, value)}>{value}</button>)}</div></div>
+          <div className="sensitivity"><SlidersHorizontal size={13}/><span>{photo ? '匹配灵敏度' : '视频相似度'}</span><div className="small-segment" role="group" aria-label="灵敏度">{sensitivities.map(value => <button key={value} disabled={state.scanning} className={settings[`${prefix}_sensitivity`] === value ? 'active' : ''} onClick={() => update(`${prefix}_sensitivity`, value)}>{value}</button>)}</div></div>
         </div>
 
         <div className="scan-bar">
@@ -230,7 +234,7 @@ function App() {
             {visibleGroups.map((g) => <button className={`group-card ${g.id === group?.id ? 'selected' : ''}`} key={g.id} onClick={() => { setGroupId(g.id); setFileId(null); }}>
               <div className="group-card-top"><span className="group-symbol">{photo ? <Images size={17}/> : <Film size={17}/>}</span><strong>第 {g.index + 1} 组</strong><span className="group-files">{g.files.length} 个文件</span></div>
               <div className="group-card-bottom"><span className={g.kind === '完全相同' ? 'match-exact' : ''}>{g.kind}</span><span>{Math.round(g.confidence * 100)}% 相似</span></div>
-              <div className="group-name" title={g.files[0].name}>{g.files[0].name}</div>
+              <div className="group-name" title={g.files[0]?.name}>{g.files[0]?.name}</div>
             </button>)}
             {!visibleGroups.length && <div className="groups-empty"><Layers2 size={27} strokeWidth={1.3}/><span>{query ? '没有匹配的分组' : state.scanning ? '正在查找重复文件' : '扫描后在此显示分组'}</span></div>}
           </div>
@@ -248,10 +252,10 @@ function App() {
                 </tr>)}
               </tbody></table>
             </div>
-            <div className="preview-grid"><Preview file={winner} recommended onOpen={() => api('open_file', winner.id, false).catch(fail)}/><Preview file={current} onOpen={() => api('open_file', current.id, false).catch(fail)}/></div>
+            <div className="preview-grid"><Preview file={winner} recommended onOpen={() => openFile(winner)}/><Preview file={current} onOpen={() => openFile(current)}/></div>
           </> : <div className="review-empty"><div className={`empty-illustration ${state.scanning ? 'scanning' : ''}`}><div className="empty-card back"><ImageIcon size={32} strokeWidth={1.2}/></div><div className="empty-card front">{state.scanning ? <ScanLine size={38} strokeWidth={1.2}/> : <Images size={38} strokeWidth={1.2}/>}</div><span className="empty-spark"><Check size={15}/></span></div><h3>{state.scanning ? '正在寻找相似的文件' : state.stage === '扫描完成' ? '没有发现重复文件' : '让每一份珍藏，都刚刚好'}</h3><p>{state.scanning ? '结果会在扫描结束后显示，你可以随时停止' : '选择照片或视频，扫描后并排对比，轻松决定保留哪一份'}</p><div className="empty-steps"><span><Folder size={14}/>选择文件夹</span><ChevronRight size={12}/><span><ScanLine size={14}/>扫描重复</span><ChevronRight size={12}/><span><CheckCheck size={14}/>审阅清理</span></div></div>}
 
-          <footer className="action-bar"><div className="review-actions"><button className="button" disabled={!group || busy || state.scanning} title="保留本组推荐文件，勾选其余文件" onClick={() => recommend([group])}><CheckCheck size={15}/>本组建议</button><button className="button" disabled={!state.groups.length || busy || state.scanning} onClick={() => recommend(state.groups)}>全部建议</button><button className="icon-button" disabled={!marks.size || busy} title="清除勾选" aria-label="清除勾选" onClick={() => setMarks(new Set())}><RotateCcw size={15}/></button><span className="action-divider"/><button className="icon-button" disabled={!current || busy} title="打开所在文件夹" aria-label="打开所在文件夹" onClick={() => api('open_file', current.id, true).catch(fail)}><FolderOpen size={16}/></button></div><button className="button danger-button" disabled={!marks.size || busy || state.scanning} onClick={() => setDialog('recycle')}><Trash2 size={15}/>移入回收站{marks.size > 0 && <span className="delete-count">{marks.size}</span>}</button></footer>
+          <footer className="action-bar"><div className="review-actions"><button className="button" disabled={!group || busy || state.scanning} title="保留本组推荐文件，勾选其余文件" onClick={() => group && recommend([group])}><CheckCheck size={15}/>本组建议</button><button className="button" disabled={!state.groups.length || busy || state.scanning} onClick={() => recommend(state.groups)}>全部建议</button><button className="icon-button" disabled={!marks.size || busy} title="清除勾选" aria-label="清除勾选" onClick={() => setMarks(new Set())}><RotateCcw size={15}/></button><span className="action-divider"/><button className="icon-button" disabled={!current || busy} title="打开所在文件夹" aria-label="打开所在文件夹" onClick={() => openFile(current, true)}><FolderOpen size={16}/></button></div><button className="button danger-button" disabled={!marks.size || busy || state.scanning} onClick={() => setDialog('recycle')}><Trash2 size={15}/>移入回收站{marks.size > 0 && <span className="delete-count">{marks.size}</span>}</button></footer>
         </section>
       </section>
     </main>
@@ -266,8 +270,14 @@ function App() {
     </div>;
 }
 
-function Preview({ file, recommended, onOpen }) {
-  const [image, setImage] = useState(null);
+interface PreviewProps {
+  file: MediaFile | undefined;
+  recommended?: boolean;
+  onOpen: () => void;
+}
+
+function Preview({ file, recommended, onOpen }: PreviewProps) {
+  const [image, setImage] = useState<string | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
     let disposed = false; setImage(null); setError(false);
@@ -277,4 +287,6 @@ function Preview({ file, recommended, onOpen }) {
   return <div className="preview-panel"><div className="preview-heading"><span className={recommended ? 'keep-title' : ''}>{recommended ? <CircleCheck size={13}/> : <ImageIcon size={13}/>} {recommended ? '建议保留' : '当前文件'}</span><button className="icon-button" title="打开原文件" aria-label={`打开${recommended ? '建议保留' : '当前'}文件`} onClick={onOpen}><ExternalLink size={13}/></button></div><div className="preview-canvas" onDoubleClick={onOpen}>{image ? <img src={image} draggable={false} alt={file?.name}/> : error ? <span className="preview-loading"><AlertCircle size={22}/>无法预览，请双击打开原文件</span> : <LoaderCircle className="spin" size={20}/>}</div><div className="preview-meta" title={file?.path}><strong>{file?.name}</strong><span>{file?.dimensions}<span>·</span>{fmt(file?.size)}{file?.stats && <><span>·</span>{file.stats}</>}</span></div></div>;
 }
 
-createRoot(document.getElementById('root')).render(<App/>);
+const root = document.getElementById('root');
+if (!root) throw new Error('缺少界面根节点');
+createRoot(root).render(<App/>);
